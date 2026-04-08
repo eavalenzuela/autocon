@@ -1,0 +1,12 @@
+[Unit]
+Description=Autocon - automatic video converter
+After=local-fs.target
+
+[Service]
+Type=simple
+ExecStart=/home/t3rmit3/gits/autocon/autocon.sh %h/Videos/autocon
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
