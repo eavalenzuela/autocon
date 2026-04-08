@@ -4,7 +4,7 @@ After=local-fs.target
 
 [Service]
 Type=simple
-ExecStart=/home/t3rmit3/gits/autocon/autocon.sh %h/Videos/autocon
+ExecStart=/home/t3rmit3/gits/autocon/autocon.py
 Restart=on-failure
 RestartSec=5
 

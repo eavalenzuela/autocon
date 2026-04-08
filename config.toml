@@ -1,0 +1,24 @@
+[directories]
+watch_dir = "~/Videos/autocon"
+output_dir = "converted"      # relative to watch_dir
+originals_dir = "originals"   # relative to watch_dir
+
+[conversion]
+video_codec = "libx264"
+crf = 23
+preset = "medium"
+max_width = 1920
+max_height = 1080
+audio_codec = "aac"
+audio_bitrate = "128k"
+
+# Extra ffmpeg output flags (e.g. ["-movflags", "+faststart"])
+extra_output_flags = ["-movflags", "+faststart"]
+
+[conversion.extensions]
+# Video file extensions to process (without the leading dot)
+video = ["mkv", "avi", "mov", "wmv", "flv", "webm", "m4v", "mpg", "mpeg", "ts", "3gp", "mp4"]
+
+[general]
+max_concurrent = 2
+file_stable_interval = 2.0    # seconds between size checks when waiting for writes to finish
