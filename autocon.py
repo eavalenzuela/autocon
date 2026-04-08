@@ -96,26 +96,31 @@ def convert_video(
 ):
     name = input_path.stem
     output_path = output_dir / f"{name}.mp4"
+    lock_path = input_path.with_name(input_path.name + ".lock")
 
     if not wait_for_stable(input_path, stable_interval):
         log.warning("File disappeared: %s", input_path.name)
         return
 
+    lock_path.touch()
     log.info("CONVERTING: %s -> converted/%s.mp4", input_path.name, name)
 
-    cmd = build_ffmpeg_cmd(input_path, output_path, settings)
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        cmd = build_ffmpeg_cmd(input_path, output_path, settings)
+        result = subprocess.run(cmd, capture_output=True, text=True)
 
-    if result.returncode == 0:
-        size_mb = output_path.stat().st_size / (1024 * 1024)
-        input_path.rename(originals_dir / input_path.name)
-        log.info(
-            "DONE: converted/%s.mp4 (%.1fM) — original moved to originals/",
-            name, size_mb,
-        )
-    else:
-        log.error("FAILED: %s\n%s", input_path.name, result.stderr[-2000:])
-        output_path.unlink(missing_ok=True)
+        if result.returncode == 0:
+            size_mb = output_path.stat().st_size / (1024 * 1024)
+            input_path.rename(originals_dir / input_path.name)
+            log.info(
+                "DONE: converted/%s.mp4 (%.1fM) — original moved to originals/",
+                name, size_mb,
+            )
+        else:
+            log.error("FAILED: %s\n%s", input_path.name, result.stderr[-2000:])
+            output_path.unlink(missing_ok=True)
+    finally:
+        lock_path.unlink(missing_ok=True)
 
 
 class VideoHandler(FileSystemEventHandler):
@@ -185,6 +190,11 @@ def main():
     stable_interval = general.get("file_stable_interval", 2.0)
 
     executor = ThreadPoolExecutor(max_workers=max_workers)
+
+    # Clean up stale lock files from previous runs
+    for lock in watch_dir.glob("*.lock"):
+        lock.unlink(missing_ok=True)
+        log.info("Removed stale lock file: %s", lock.name)
 
     # Process existing videos
     log.info("Scanning for existing videos in %s ...", watch_dir)
