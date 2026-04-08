@@ -128,11 +128,7 @@ class VideoHandler(FileSystemEventHandler):
         self.extensions = extensions
         self.executor = executor
 
-    def on_closed(self, event):
-        """Triggered on IN_CLOSE_WRITE (Linux inotify) — file finished writing."""
-        if event.is_directory:
-            return
-        path = Path(event.src_path)
+    def _handle(self, path: Path):
         if path.parent.resolve() != self.watch_dir:
             return
         if is_video(path, self.extensions):
@@ -140,6 +136,16 @@ class VideoHandler(FileSystemEventHandler):
                 convert_video, path, self.output_dir, self.originals_dir,
                 self.settings, self.stable_interval,
             )
+
+    def on_closed(self, event):
+        """Triggered on IN_CLOSE_WRITE (Linux inotify) — file finished writing."""
+        if not event.is_directory:
+            self._handle(Path(event.src_path))
+
+    def on_moved(self, event):
+        """Triggered on IN_MOVED_TO — file moved into the watch directory."""
+        if not event.is_directory:
+            self._handle(Path(event.dest_path))
 
 
 def main():
