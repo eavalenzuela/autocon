@@ -21,7 +21,8 @@ Automatic video converter daemon. Watches a directory for new video files and co
 ## Installation
 
 ```sh
-pip install -r requirements.txt
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
 ```
 
 ## Configuration
@@ -66,12 +67,16 @@ A legacy bash version (`autocon.sh`) is also included, which takes the watch dir
 
 ## Systemd service
 
-Copy and edit the provided unit file to run autocon as a user service:
+Copy the provided unit file and edit the `ExecStart` paths to match your installation directory:
 
 ```sh
 mkdir -p ~/.config/systemd/user
 cp autocon.service ~/.config/systemd/user/
-# Edit ExecStart path to match your installation
+
+# Edit ExecStart to point to your clone location — %h expands to your home directory
+# e.g. ExecStart=%h/gits/autocon/.venv/bin/python3 %h/gits/autocon/autocon.py
+nano ~/.config/systemd/user/autocon.service
+
 systemctl --user daemon-reload
 systemctl --user enable --now autocon
 ```
