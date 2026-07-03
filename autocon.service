@@ -7,6 +7,9 @@ Type=simple
 ExecStart=%h/gits/autocon/.venv/bin/python3 %h/gits/autocon/autocon.py
 Restart=on-failure
 RestartSec=5
+# Keep background transcodes from starving interactive use
+Nice=10
+IOSchedulingClass=idle
 
 [Install]
 WantedBy=default.target
