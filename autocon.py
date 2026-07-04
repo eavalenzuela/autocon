@@ -61,6 +61,11 @@ CODEC_NAMES = {
 
 ORIGINALS_MODES = {"keep", "delete"}
 
+# Bounds so a hung/adversarial child (ffprobe on a malformed container, a
+# blocking hook) cannot pin a worker thread forever.
+PROBE_TIMEOUT = 60.0
+HOOK_TIMEOUT = 60.0
+
 
 def load_config(path: Path) -> dict:
     with open(path, "rb") as f:
@@ -227,6 +232,9 @@ def build_ffmpeg_cmd(input_path: Path, output_path: Path, settings: dict) -> lis
     cmd = [
         "ffmpeg", "-nostdin", "-hide_banner", "-y",
         "-i", str(input_path),
+        # Keep the primary video and every audio track (matches build_remux_cmd);
+        # without explicit maps ffmpeg's default selection drops all but one audio.
+        "-map", "0:v:0", "-map", "0:a?",
         "-c:v", codec, "-crf", str(crf), "-preset", preset,
         "-vf", scale_filter,
         "-c:a", audio_codec, "-b:a", audio_bitrate,
@@ -257,7 +265,10 @@ def probe_streams(path: Path) -> list[dict] | None:
         "-of", "json", str(path),
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=PROBE_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        log.warning("ffprobe timed out after %.0fs on %s", PROBE_TIMEOUT, path.name)
+        return None
     except OSError:
         return None
     if result.returncode != 0:
@@ -308,7 +319,10 @@ def run_hook(hook: str, cmd: list[str] | None, **values: str):
     expanded = expand_hook(cmd, **values)
     log.debug("Running %s hook: %s", hook, expanded)
     try:
-        result = subprocess.run(expanded, capture_output=True, text=True)
+        result = subprocess.run(expanded, capture_output=True, text=True, timeout=HOOK_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        log.error("Hook %s timed out after %.0fs", hook, HOOK_TIMEOUT)
+        return
     except OSError as exc:
         log.error("Hook %s failed to start: %s", hook, exc)
         return
@@ -394,36 +408,42 @@ class Converter:
             return
 
         # Reserve a collision-free output name (foo.mkv and foo.avi both map
-        # to foo.mp4 otherwise, and ffmpeg runs with -y).
+        # to foo.mp4 otherwise, and ffmpeg runs with -y). unique_path+touch runs
+        # under the lock so two workers can't race to the same name.
         with self._lock:
             output_path = unique_path(self.output_dir / f"{input_path.stem}.mp4")
             output_path.touch()
 
         lock_path = input_path.with_name(input_path.name + ".lock")
-        lock_path.touch()
 
-        remux = False
-        if self.remux_compatible:
-            streams = probe_streams(input_path)
-            remux = streams is not None and is_remuxable(streams, self.settings)
-
-        if remux:
-            cmd = build_remux_cmd(input_path, output_path, self.settings)
-            log.info(
-                "REMUXING: %s -> %s/%s (streams already compatible)",
-                input_path.name, self.output_dir.name, output_path.name,
-            )
-        else:
-            cmd = build_ffmpeg_cmd(input_path, output_path, self.settings)
-            log.info(
-                "CONVERTING: %s -> %s/%s",
-                input_path.name, self.output_dir.name, output_path.name,
-            )
-        log.debug("ffmpeg command: %s", " ".join(cmd))
-
-        input_size = input_path.stat().st_size
-        started = time.monotonic()
+        # Everything below can raise (the input can vanish before stat(), Popen
+        # can fail). If we don't reach a terminal handler, the reserved-but-empty
+        # output and the .lock would otherwise be orphaned, so clean both up.
+        completed = False
         try:
+            lock_path.touch()
+
+            remux = False
+            if self.remux_compatible:
+                streams = probe_streams(input_path)
+                remux = streams is not None and is_remuxable(streams, self.settings)
+
+            if remux:
+                cmd = build_remux_cmd(input_path, output_path, self.settings)
+                log.info(
+                    "REMUXING: %s -> %s/%s (streams already compatible)",
+                    input_path.name, self.output_dir.name, output_path.name,
+                )
+            else:
+                cmd = build_ffmpeg_cmd(input_path, output_path, self.settings)
+                log.info(
+                    "CONVERTING: %s -> %s/%s",
+                    input_path.name, self.output_dir.name, output_path.name,
+                )
+            log.debug("ffmpeg command: %s", " ".join(cmd))
+
+            input_size = input_path.stat().st_size
+            started = time.monotonic()
             proc = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             )
@@ -438,13 +458,17 @@ class Converter:
             if self.stop.is_set() and proc.returncode != 0:
                 log.info("CANCELLED: %s (shutting down)", input_path.name)
                 output_path.unlink(missing_ok=True)
+                completed = True
                 return
 
             if proc.returncode == 0:
                 self._finish_success(input_path, output_path, input_size, started, remux)
             else:
                 self._finish_failure(input_path, output_path, stderr)
+            completed = True
         finally:
+            if not completed:
+                output_path.unlink(missing_ok=True)
             lock_path.unlink(missing_ok=True)
 
     def _finish_success(self, input_path: Path, output_path: Path,
@@ -457,13 +481,21 @@ class Converter:
             input_path.unlink(missing_ok=True)
             original_note = "original deleted"
         else:
-            # shutil.move survives originals_dir being on another filesystem
+            # shutil.move survives originals_dir being on another filesystem.
+            # The conversion already succeeded, so a failed move must not unwind
+            # the worker (which would mis-report a real success as a crash and
+            # re-convert the input into a duplicate on restart).
             dest = unique_path(self.originals_dir / input_path.name)
-            shutil.move(str(input_path), str(dest))
-            original_note = f"original moved to {self.originals_dir.name}/"
+            try:
+                shutil.move(str(input_path), str(dest))
+                original_note = f"original moved to {self.originals_dir.name}/"
+            except OSError as exc:
+                log.error("Could not move original %s: %s", input_path.name, exc)
+                original_note = "original left in place (move failed)"
 
         action = "remuxed" if remuxed else "converted"
-        self.stats[action] += 1
+        with self._lock:
+            self.stats[action] += 1
         log.info(
             "DONE: %s/%s (%.1fM -> %.1fM, %.0f%% saved, %s in %s) — %s",
             self.output_dir.name, output_path.name,
@@ -476,7 +508,8 @@ class Converter:
         )
 
     def _finish_failure(self, input_path: Path, output_path: Path, stderr: str):
-        self.stats["failed"] += 1
+        with self._lock:
+            self.stats["failed"] += 1
         log.error("FAILED: %s\n%s", input_path.name, (stderr or "").strip()[-2000:])
         output_path.unlink(missing_ok=True)
 
@@ -506,13 +539,22 @@ class VideoHandler(FileSystemEventHandler):
         if should_process(path, self.extensions):
             self.converter.submit(path)
 
+    def on_created(self, event):
+        """Triggered on IN_CREATE — e.g. a same-filesystem `mv` into the watch
+        dir emits only a create event (no moved/closed). wait_for_stable guards
+        against acting on a still-writing file and the _in_progress set dedups
+        against a matching on_closed for the same copied-in file."""
+        if not event.is_directory:
+            self._handle(Path(event.src_path))
+
     def on_closed(self, event):
         """Triggered on IN_CLOSE_WRITE (Linux inotify) — file finished writing."""
         if not event.is_directory:
             self._handle(Path(event.src_path))
 
     def on_moved(self, event):
-        """Triggered on IN_MOVED_TO — file moved into the watch directory."""
+        """Triggered on IN_MOVED_TO — file moved into the watch directory
+        from another location inside the watched tree."""
         if not event.is_directory:
             self._handle(Path(event.dest_path))
 

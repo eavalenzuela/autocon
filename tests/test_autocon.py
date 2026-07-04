@@ -163,6 +163,17 @@ def test_build_ffmpeg_cmd_custom_settings():
     assert "+faststart" not in cmd
 
 
+def test_build_ffmpeg_cmd_maps_all_audio():
+    # Re-encode must keep the primary video and every audio track, matching the
+    # remux path; without these maps ffmpeg's default selection drops all but
+    # one audio stream.
+    cmd = autocon.build_ffmpeg_cmd(Path("in.mkv"), Path("out.mp4"), {})
+    assert "-map" in cmd
+    map_values = [cmd[i + 1] for i, a in enumerate(cmd) if a == "-map"]
+    assert "0:v:0" in map_values
+    assert "0:a?" in map_values
+
+
 def test_build_remux_cmd_stream_copies():
     cmd = autocon.build_remux_cmd(Path("in.mkv"), Path("out.mp4"), {})
     assert cmd[cmd.index("-c") + 1] == "copy"
@@ -230,3 +241,40 @@ def test_expand_hook_substitutes_placeholders():
 def test_expand_hook_leaves_unknown_braces():
     expanded = autocon.expand_hook(["echo", "{unknown}"], name="movie")
     assert expanded == ["echo", "{unknown}"]
+
+
+# --- watch handler ---
+
+class _RecordingConverter:
+    def __init__(self):
+        self.submitted = []
+
+    def submit(self, path):
+        self.submitted.append(path)
+
+
+class _FakeEvent:
+    def __init__(self, src_path, is_directory=False):
+        self.src_path = src_path
+        self.dest_path = src_path
+        self.is_directory = is_directory
+
+
+def test_on_created_submits_video(tmp_path):
+    # A same-filesystem `mv` into the watch dir emits only a create event, so
+    # on_created must queue the file (files were silently ignored before).
+    watch = tmp_path.resolve()
+    conv = _RecordingConverter()
+    handler = autocon.VideoHandler(watch, {".mkv"}, conv)
+    movie = watch / "movie.mkv"
+    handler.on_created(_FakeEvent(str(movie)))
+    assert conv.submitted == [movie]
+
+
+def test_on_created_ignores_non_video_and_dirs(tmp_path):
+    watch = tmp_path.resolve()
+    conv = _RecordingConverter()
+    handler = autocon.VideoHandler(watch, {".mkv"}, conv)
+    handler.on_created(_FakeEvent(str(watch / "notes.txt")))
+    handler.on_created(_FakeEvent(str(watch / "subdir"), is_directory=True))
+    assert conv.submitted == []
