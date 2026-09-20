@@ -1,6 +1,11 @@
 [Unit]
 Description=Autocon - automatic video converter
 After=local-fs.target
+# Give up after 5 failed starts in 5 minutes instead of retrying forever.
+# A persistent startup error (e.g. the venv losing its packages after a
+# system Python upgrade) otherwise re-logs the same traceback every 5s.
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple

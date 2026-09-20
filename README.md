@@ -114,6 +114,22 @@ systemctl --user enable --now autocon
 
 The unit runs conversions at low CPU/IO priority (`Nice=10`, `IOSchedulingClass=idle`) so background transcodes don't interfere with interactive use. On `systemctl --user stop autocon`, in-flight ffmpeg processes are terminated and their partial outputs cleaned up.
 
+### Troubleshooting
+
+If the service fails to start with `ModuleNotFoundError: No module named 'watchdog'`,
+the system Python was most likely upgraded (e.g. 3.12 → 3.14) and the venv's
+packages were left behind under the old version. Rebuild the venv:
+
+```sh
+python3 -m venv --clear .venv
+.venv/bin/pip install -r requirements.txt
+systemctl --user restart autocon
+```
+
+The unit stops retrying after 5 failed starts in 5 minutes
+(`StartLimitIntervalSec`/`StartLimitBurst`); after fixing the cause, run
+`systemctl --user reset-failed autocon` before restarting if it hit that limit.
+
 ## Testing
 
 ```sh
