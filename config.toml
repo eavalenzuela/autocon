@@ -1,5 +1,5 @@
 [directories]
-watch_dir = "~/Videos/autocon"
+watch_dir = "/home/t3rmit3/Downloads/torrents/_conversion"
 output_dir = "converted"      # relative to watch_dir
 originals_dir = "originals"   # relative to watch_dir
 
